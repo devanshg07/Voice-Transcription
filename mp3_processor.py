@@ -1,10 +1,16 @@
 import os
 import time
-import threading
+import wave
+import numpy as np
 from pathlib import Path
 from typing import Union, Optional
-import pyaudio
-import wave
+
+try:
+    import sounddevice as sd
+    AUDIO_AVAILABLE = True
+except ImportError:
+    AUDIO_AVAILABLE = False
+    print("⚠️  sounddevice not available. Install with: pip install sounddevice")
 
 
 class MP3Processor:
@@ -14,18 +20,11 @@ class MP3Processor:
     
     def __init__(self):
         self.supported_extensions = {'.mp3'}
-        self.audio = pyaudio.PyAudio()
         self.recording = False
-        self.frames = []
+        self.audio_data = None
         
-    def __del__(self):
-        """Clean up audio resources."""
-        if hasattr(self, 'audio'):
-            self.audio.terminate()
-    
     def record_audio(self, output_file: str = "recorded_audio.wav", 
-                    sample_rate: int = 44100, channels: int = 1, 
-                    chunk_size: int = 1024) -> bool:
+                    sample_rate: int = 44100, channels: int = 1) -> bool:
         """
         Record audio from microphone until stopped.
         
@@ -33,66 +32,82 @@ class MP3Processor:
             output_file: Output WAV file path
             sample_rate: Audio sample rate
             channels: Number of audio channels (1=mono, 2=stereo)
-            chunk_size: Size of audio chunks to process
             
         Returns:
             bool: True if recording was successful
         """
+        if not AUDIO_AVAILABLE:
+            print("❌ Audio recording not available. Install sounddevice: pip install sounddevice")
+            return False
+            
         try:
             print("🎤 Recording started... Speak now!")
             print("Press Ctrl+C to stop recording")
             
-            # Open audio stream
-            stream = self.audio.open(
-                format=pyaudio.paInt16,
-                channels=channels,
-                rate=sample_rate,
-                input=True,
-                frames_per_buffer=chunk_size
-            )
-            
-            self.recording = True
-            self.frames = []
-            
+            # Record audio
             print("Recording... (Press Ctrl+C to stop)")
             
             try:
-                while self.recording:
-                    data = stream.read(chunk_size)
-                    self.frames.append(data)
-                    
-            except KeyboardInterrupt:
-                print("\n⏹️  Recording stopped!")
-                
-            finally:
-                # Clean up
-                stream.stop_stream()
-                stream.close()
+                # Record audio using sounddevice
+                audio_data = sd.rec(int(sample_rate * 60), samplerate=sample_rate, 
+                                  channels=channels, dtype='int16')
+                sd.wait()  # Wait for recording to complete
                 
                 # Save the recorded audio
-                if self.frames:
-                    self._save_audio(output_file, sample_rate, channels)
-                    print(f"✅ Audio saved to: {output_file}")
-                    return True
-                else:
-                    print("❌ No audio was recorded")
-                    return False
+                self._save_audio_simple(output_file, audio_data, sample_rate, channels)
+                print(f"✅ Audio saved to: {output_file}")
+                return True
+                
+            except KeyboardInterrupt:
+                print("\n⏹️  Recording stopped!")
+                return False
                     
         except Exception as e:
             print(f"❌ Error recording audio: {e}")
             return False
     
-    def _save_audio(self, filename: str, sample_rate: int, channels: int):
-        """Save recorded audio to WAV file."""
+    def _save_audio_simple(self, filename: str, audio_data, sample_rate: int, channels: int):
+        """Save recorded audio to WAV file using numpy and wave."""
         with wave.open(filename, 'wb') as wf:
             wf.setnchannels(channels)
-            wf.setsampwidth(self.audio.get_sample_size(pyaudio.paInt16))
+            wf.setsampwidth(2)  # 16-bit audio
             wf.setframerate(sample_rate)
-            wf.writeframes(b''.join(self.frames))
+            wf.writeframes(audio_data.tobytes())
     
-    def stop_recording(self):
-        """Stop the current recording."""
-        self.recording = False
+    def record_audio_interactive(self, output_file: str = "recorded_audio.wav", 
+                               sample_rate: int = 44100, duration: int = 10) -> bool:
+        """
+        Record audio for a specified duration.
+        
+        Args:
+            output_file: Output WAV file path
+            sample_rate: Audio sample rate
+            duration: Recording duration in seconds
+            
+        Returns:
+            bool: True if recording was successful
+        """
+        if not AUDIO_AVAILABLE:
+            print("❌ Audio recording not available. Install sounddevice: pip install sounddevice")
+            return False
+            
+        try:
+            print(f"🎤 Recording for {duration} seconds... Speak now!")
+            print("Recording will stop automatically...")
+            
+            # Record audio for specified duration
+            audio_data = sd.rec(int(sample_rate * duration), samplerate=sample_rate, 
+                              channels=1, dtype='int16')
+            sd.wait()  # Wait for recording to complete
+            
+            # Save the recorded audio
+            self._save_audio_simple(output_file, audio_data, sample_rate, 1)
+            print(f"✅ Audio saved to: {output_file}")
+            return True
+                    
+        except Exception as e:
+            print(f"❌ Error recording audio: {e}")
+            return False
     
     def absorb_mp3(self, file_path: Union[str, Path]) -> bool:
         """
@@ -165,18 +180,19 @@ def absorb_mp3_file(file_path: Union[str, Path]) -> bool:
     return processor.absorb_mp3(file_path)
 
 
-def record_and_save(output_file: str = "recorded_audio.wav") -> bool:
+def record_and_save(output_file: str = "recorded_audio.wav", duration: int = 10) -> bool:
     """
     Simple function to record audio and save it.
     
     Args:
         output_file: Output WAV file path
+        duration: Recording duration in seconds
         
     Returns:
         bool: True if successful, False otherwise
     """
     processor = MP3Processor()
-    return processor.record_audio(output_file)
+    return processor.record_audio_interactive(output_file, duration=duration)
 
 
 # Example usage
@@ -184,27 +200,42 @@ if __name__ == "__main__":
     # Example of how to use the module
     processor = MP3Processor()
     
-    print("🎵 MP3 Processor Module")
-    print("======================")
+    print("🎵 MP3 Processor Module (Simple Version)")
+    print("=======================================")
     
     # Ask user what they want to do
     print("\nWhat would you like to do?")
-    print("1. Record audio (speak and press Ctrl+C to stop)")
-    print("2. Process existing MP3 file")
+    print("1. Record audio (10 seconds)")
+    print("2. Record audio (custom duration)")
+    print("3. Process existing MP3 file")
     
-    choice = input("Enter your choice (1 or 2): ").strip()
+    choice = input("Enter your choice (1, 2, or 3): ").strip()
     
     if choice == "1":
         print("\n🎤 Starting audio recording...")
-        print("Speak into your microphone, then press Ctrl+C to stop recording")
+        print("Speak into your microphone for 10 seconds")
         
-        success = processor.record_audio("my_recording.wav")
+        success = processor.record_audio_interactive("my_recording.wav", duration=10)
         if success:
             print("✅ Recording completed successfully!")
         else:
             print("❌ Recording failed")
             
     elif choice == "2":
+        try:
+            duration = int(input("Enter recording duration in seconds: "))
+            print(f"\n🎤 Starting audio recording for {duration} seconds...")
+            print("Speak into your microphone")
+            
+            success = processor.record_audio_interactive("my_recording.wav", duration=duration)
+            if success:
+                print("✅ Recording completed successfully!")
+            else:
+                print("❌ Recording failed")
+        except ValueError:
+            print("❌ Invalid duration. Please enter a number.")
+            
+    elif choice == "3":
         # Example file path (replace with actual MP3 file)
         example_file = "example.mp3"
         
@@ -217,4 +248,4 @@ if __name__ == "__main__":
             print("To test, place an MP3 file in the same directory and update the filename")
     
     else:
-        print("Invalid choice. Please run again and select 1 or 2.") 
+        print("Invalid choice. Please run again and select 1, 2, or 3.") 
